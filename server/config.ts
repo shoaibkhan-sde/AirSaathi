@@ -3,7 +3,7 @@ import { z } from 'zod';
 const ServerConfigSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3001),
   GEMINI_API_KEY: z.string().min(1).optional(),
-  GEMINI_MODEL: z.string().min(1).default('gemini-1.5-flash'),
+  GEMINI_MODEL: z.string().min(1).default('gemini-2.5-flash'),
   OPEN_METEO_API_KEY: z.string().min(1).optional(),
   OPEN_METEO_API_BASE_URL: z.string().url().default('https://air-quality-api.open-meteo.com'),
   NOMINATIM_USER_AGENT: z.string().min(1).default('AirSaathi-Web/1.0'),

@@ -52,11 +52,11 @@ async function getActiveGeminiModel(apiKey: string): Promise<{ model: string; ve
           .map((m: any) => String(m.name).replace(/^models\//, ''));
 
         if (genModels.length > 0) {
+          const preferred = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
           if (userModel && genModels.includes(userModel)) {
             cachedWorkingModel = { model: userModel, version };
             return cachedWorkingModel;
           }
-          const preferred = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash'];
           let chosen = genModels[0];
           for (const p of preferred) {
             if (genModels.includes(p)) { chosen = p; break; }
@@ -140,47 +140,62 @@ export async function handleChatRequest(req: IncomingMessage, res: ServerRespons
     }
   }
 
-  const url = `https://generativelanguage.googleapis.com/${modelInfo.version}/models/${encodeURIComponent(cleanModel)}:generateContent?key=${apiKey}`;
+  const candidateModels = [
+    modelInfo.model,
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+  ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
 
-  try {
-    const response = await safeFetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(payload),
-    });
+  for (const model of candidateModels) {
+    const cleanModel = model.replace(/^models\//, '');
+    const url = `https://generativelanguage.googleapis.com/${modelInfo.version}/models/${encodeURIComponent(cleanModel)}:generateContent?key=${apiKey}`;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      let parsedMsg = errorText;
-      try {
-        const errObj = JSON.parse(errorText);
-        if (errObj?.error?.message) parsedMsg = errObj.error.message;
-      } catch {
-        // Keep text
-      }
-      sendError(res, response.status, 'UPSTREAM_GEMINI_ERROR', parsedMsg);
-      return;
-    }
-
-    const data = (await response.json()) as any;
-    const rawReply = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    const sanitizedOutput = validateAndSanitizeAiOutput(rawReply, cleanModel);
-
-    if (canCache && !sanitizedOutput.isFallback) {
-      aiResponseCache.set(cacheKey, {
-        reply: sanitizedOutput.reply,
-        model: cleanModel,
-        timestamp: Date.now(),
+    try {
+      const response = await safeFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify(payload),
       });
-    }
 
-    sendJson(res, 200, {
-      status: 'success',
-      reply: sanitizedOutput.reply,
-      model: sanitizedOutput.model,
-      isFallback: sanitizedOutput.isFallback,
-    });
-  } catch (err: any) {
-    sendError(res, 502, 'UPSTREAM_TIMEOUT', err.message || 'Gemini connection timeout.');
+      if (!response.ok) {
+        if (response.status === 503 || response.status === 429 || response.status === 404) {
+          continue;
+        }
+        const errorText = await response.text();
+        let parsedMsg = errorText;
+        try {
+          const errObj = JSON.parse(errorText);
+          if (errObj?.error?.message) parsedMsg = errObj.error.message;
+        } catch {}
+        sendError(res, response.status, 'UPSTREAM_GEMINI_ERROR', parsedMsg);
+        return;
+      }
+
+      const data = (await response.json()) as any;
+      const rawReply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const sanitizedOutput = validateAndSanitizeAiOutput(rawReply, cleanModel);
+
+      if (canCache && !sanitizedOutput.isFallback) {
+        aiResponseCache.set(cacheKey, { reply: sanitizedOutput.reply, model: cleanModel, timestamp: Date.now() });
+      }
+
+      sendJson(res, 200, {
+        status: 'success',
+        reply: sanitizedOutput.reply,
+        model: sanitizedOutput.model,
+        isFallback: sanitizedOutput.isFallback,
+      });
+      return;
+    } catch {
+      // Try next candidate model
+    }
   }
+
+  sendJson(res, 200, {
+    status: 'notice',
+    reply: '• Keep windows closed during peak morning inversion hours (6 AM - 10 AM).\n• Run bedroom HEPA air purifiers continuously when ambient AQI is elevated.\n• Wear an N95 mask when commuting on two-wheelers or walking outdoors.\n\n*(Notice: Live Gemini models are currently experiencing peak demand. Providing verified clean-air advisory.)*',
+    model: 'fallback-advisor',
+    isFallback: true,
+  });
 }
