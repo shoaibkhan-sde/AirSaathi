@@ -24,5 +24,5 @@
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "server", "api"]
+  "include": ["src", "server"]
 }
