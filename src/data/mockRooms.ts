@@ -1,0 +1,125 @@
+import type { RoomGuidance } from '../types';
+
+export const MOCK_ROOMS: RoomGuidance[] = [
+  {
+    id: 'living',
+    name: 'Living Room',
+    status: 'Clean',
+    description: 'Primary gathering area with moderate foot traffic and natural window exposure.',
+    actions: [
+      {
+        id: 'lr-1',
+        title: 'Run HEPA purifier on auto-sensing mode',
+        description: 'Position purifier at least 1 foot away from walls.',
+        priority: 'high',
+        costLevel: 'Investment',
+        completed: true,
+      },
+      {
+        id: 'lr-2',
+        title: 'Damp-wipe surfaces rather than dry dusting',
+        description: 'Dry dusting resuspends allergens. Use a micro-fiber damp cloth.',
+        priority: 'medium',
+        costLevel: 'Free',
+        completed: false,
+      },
+      {
+        id: 'lr-3',
+        title: 'Maintain living houseplants',
+        description: 'Houseplants improve indoor humidity balance.',
+        priority: 'low',
+        costLevel: 'Low-cost',
+        completed: true,
+      },
+    ],
+  },
+  {
+    id: 'bedroom',
+    name: 'Bedroom',
+    status: 'Clean',
+    description: 'Rest space where family members spend 7–9 continuous breathing hours each night.',
+    actions: [
+      {
+        id: 'br-1',
+        title: 'Close bedroom windows 1 hour before sleeping',
+        description: 'Nighttime cooling concentrates particulates near windows.',
+        priority: 'high',
+        costLevel: 'Free',
+        completed: true,
+      },
+      {
+        id: 'br-2',
+        title: 'Keep purifier on low silent mode through the night',
+        description: 'Continuous low-speed exchange ensures deep sleep.',
+        priority: 'high',
+        costLevel: 'Low-cost',
+        completed: true,
+      },
+      {
+        id: 'br-3',
+        title: 'Wash bed linens in warm water weekly',
+        description: 'Eliminates microscopic dust mite reservoirs.',
+        priority: 'medium',
+        costLevel: 'Free',
+        completed: false,
+      },
+    ],
+  },
+  {
+    id: 'kitchen',
+    name: 'Kitchen',
+    status: 'Moderate',
+    description:
+      'High-combustion zone where cooking oils and gas stoves release ultrafine particles and NO₂.',
+    actions: [
+      {
+        id: 'kt-1',
+        title: 'Always power on the chimney/exhaust during cooking',
+        description: 'Run exhaust for 3 min after cooking ends.',
+        priority: 'high',
+        costLevel: 'Free',
+        completed: false,
+      },
+      {
+        id: 'kt-2',
+        title: 'Cover pans with lids during oil sauteing',
+        description: 'Restricts oil droplet volatilization.',
+        priority: 'high',
+        costLevel: 'Free',
+        completed: true,
+      },
+      {
+        id: 'kt-3',
+        title: 'Clean exhaust grease filters bi-weekly',
+        description: 'Clogged metal mesh reduces airflow by >40%.',
+        priority: 'medium',
+        costLevel: 'Free',
+        completed: false,
+      },
+    ],
+  },
+  {
+    id: 'study',
+    name: 'Study & Workspace',
+    status: 'Clean',
+    description: 'Focus area with computers, printers, and closed-door concentration.',
+    actions: [
+      {
+        id: 'st-1',
+        title: 'Brief 5-minute cross ventilation during 2 PM dip',
+        description: 'Flushes out accumulated CO₂ from closed study rooms.',
+        priority: 'high',
+        costLevel: 'Free',
+        completed: false,
+      },
+      {
+        id: 'st-2',
+        title: 'Position desktop away from laser printer exhaust',
+        description: 'Printers emit brief ozone and toner microparticles.',
+        priority: 'low',
+        costLevel: 'Free',
+        completed: true,
+      },
+    ],
+  },
+];

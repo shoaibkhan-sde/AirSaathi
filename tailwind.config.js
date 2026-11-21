@@ -1,0 +1,60 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        brand: {
+          teal: '#176B65',
+          'teal-dark': '#0F4D48',
+          'teal-light': '#E8F5EE',
+          'teal-muted': '#D2E7E5',
+          emerald: '#2F855A',
+          'emerald-light': '#E8F5EE',
+          marigold: '#D99036',
+          'marigold-light': '#FDF4E7',
+          surface: '#FFFFFF',
+          bg: '#F6F9FB',
+          'bg-cool': '#F2F6F9',
+          border: '#E8ECF0',
+          'border-light': '#F0F3F6',
+          text: '#17242B',
+          'text-secondary': '#657279',
+          'text-muted': '#8E9BA0',
+        },
+        aqi: {
+          good: '#2F855A',
+          'good-bg': '#EBF6F0',
+          satisfactory: '#7C9B35',
+          'satisfactory-bg': '#F3F7E7',
+          moderate: '#D4A72C',
+          'moderate-bg': '#FDF9EB',
+          poor: '#F06543',
+          'poor-bg': '#FFF1EB',
+          verypoor: '#B94B45',
+          'verypoor-bg': '#FCEFED',
+          severe: '#6D3F69',
+          'severe-bg': '#F6EDF5',
+        },
+      },
+      fontFamily: {
+        sans: ['Inter', 'sans-serif'],
+        heading: ['Inter', 'sans-serif'],
+      },
+      borderRadius: {
+        btn: '8px',
+        input: '8px',
+        panel: '14px',
+        section: '18px',
+        card: '16px',
+      },
+      boxShadow: {
+        subtle: '0 1px 3px rgba(23, 36, 43, 0.04), 0 1px 2px rgba(23, 36, 43, 0.02)',
+        card: '0 2px 8px rgba(23, 36, 43, 0.04), 0 1px 3px rgba(23, 36, 43, 0.02)',
+        'card-hover': '0 8px 20px rgba(23, 36, 43, 0.06), 0 2px 6px rgba(23, 36, 43, 0.03)',
+      },
+    },
+  },
+  plugins: [],
+};
