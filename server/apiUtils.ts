@@ -27,6 +27,23 @@ export function sendError(
 }
 
 export function parseBody(req: IncomingMessage): Promise<any> {
+  const anyReq = req as any;
+  if (anyReq.body !== undefined && anyReq.body !== null) {
+    if (typeof anyReq.body === 'string') {
+      if (!anyReq.body.trim()) return Promise.resolve({});
+      try {
+        return Promise.resolve(JSON.parse(anyReq.body));
+      } catch {
+        return Promise.reject({
+          statusCode: 400,
+          code: 'INVALID_JSON',
+          message: 'Malformed JSON payload in request body.',
+        });
+      }
+    }
+    return Promise.resolve(anyReq.body);
+  }
+
   return new Promise((resolve, reject) => {
     const method = req.method?.toUpperCase();
     if (method === 'POST' || method === 'PUT') {
