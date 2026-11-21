@@ -1,4 +1,4 @@
-# AirSaathi (एयर साथी)
+# AirSaathi
 
 > An intelligent clean-air companion helping urban families in South Asia navigate severe winter smog with personalized, actionable guidance.
 
