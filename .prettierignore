@@ -1,3 +1,5 @@
 dist
 node_modules
 .git
+api/index.js
+
