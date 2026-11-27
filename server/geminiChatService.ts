@@ -1,24 +1,41 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { parseBody, sendJson, sendError } from './apiUtils.ts';
 import { serverConfig } from './config.ts';
-import { safeFetch } from './httpClient.ts';
 import { ChatRequestSchema } from './validationSchemas.ts';
-import { sanitizeUserPrompt, validateAndSanitizeAiOutput } from './promptSanitizer.ts';
-
-let cachedWorkingModel: { model: string; version: string } | null = null;
+import { sanitizeUserPrompt } from './promptSanitizer.ts';
+import {
+  getActiveGeminiModel,
+  queryGeminiCandidateModels,
+  type GeminiPayload,
+  type GeminiContentMessage,
+} from './geminiModelProvider.ts';
 
 interface AICacheEntry {
   reply: string;
   model: string;
   timestamp: number;
 }
-const aiResponseCache = new Map<string, AICacheEntry>();
-export const AI_FAQ_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour TTL
 
-function buildSystemInstruction(context?: Record<string, unknown>): string {
-  const city = context?.city as any;
-  const profile = context?.profile as any;
-  const activePage = (context?.activePage as string) || 'home';
+interface ContextCity {
+  name?: string;
+  aqi?: number;
+  category?: string;
+  pm2_5?: number;
+}
+
+interface ContextProfile {
+  homeType?: string;
+  cookingFuel?: string;
+  hasAirPurifier?: boolean;
+}
+
+const aiResponseCache = new Map<string, AICacheEntry>();
+export const AI_FAQ_CACHE_TTL_MS = 60 * 60 * 1000;
+
+function formatContextDescription(context?: Record<string, unknown>): { loc: string; prof: string; page: string } {
+  const city = context?.city as ContextCity | undefined;
+  const profile = context?.profile as ContextProfile | undefined;
+  const page = (context?.activePage as string) || 'home';
 
   const loc = city?.name
     ? `Location: ${city.name} | US AQI: ${city.aqi ?? 'N/A'} (${city.category ?? 'Unknown'}) | PM2.5: ${city.pm2_5 ?? 'N/A'} µg/m³`
@@ -28,57 +45,104 @@ function buildSystemInstruction(context?: Record<string, unknown>): string {
     ? `Profile: Home: ${profile.homeType || 'standard'}, Cooking: ${profile.cookingFuel || 'standard'}, Purifier: ${profile.hasAirPurifier ? 'Yes' : 'No'}`
     : 'Profile: Standard default';
 
+  return { loc, prof, page };
+}
+
+function buildSystemInstruction(context?: Record<string, unknown>): string {
+  const { loc, prof, page } = formatContextDescription(context);
   return `You are "AirSaathi Assistant", an intelligent air-quality companion for the AirSaathi web app.
 App sections: Home, Smart Tips, Indoor Air (never fabricate indoor AQI), Sustainability, Settings.
-Context: Tab: ${activePage} | ${loc} | ${prof}
+Context: Tab: ${page} | ${loc} | ${prof}
 Guidance: Friendly, clear, concise English with bullet points using the bullet character (•). Do not use raw asterisks (*) or asterisk-wrapped bolding (**). General exposure reduction only, no medical prescribing.`;
 }
 
-async function getActiveGeminiModel(apiKey: string): Promise<{ model: string; version: string; error?: string }> {
-  if (cachedWorkingModel) return cachedWorkingModel;
-
-  const userModel = serverConfig.GEMINI_MODEL;
-  for (const version of ['v1beta', 'v1']) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/${version}/models?key=${apiKey}`;
-      const res = await safeFetch(url, { headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' } });
-      const rawText = await res.text();
-      let json: any = null;
-      try { json = JSON.parse(rawText); } catch { json = null; }
-
-      if (res.ok && json?.models && Array.isArray(json.models)) {
-        const genModels = json.models
-          .filter((m: any) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
-          .map((m: any) => String(m.name).replace(/^models\//, ''));
-
-        if (genModels.length > 0) {
-          const preferred = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
-          if (userModel && genModels.includes(userModel)) {
-            cachedWorkingModel = { model: userModel, version };
-            return cachedWorkingModel;
-          }
-          let chosen = genModels[0];
-          for (const p of preferred) {
-            if (genModels.includes(p)) { chosen = p; break; }
-          }
-          cachedWorkingModel = { model: chosen, version };
-          return cachedWorkingModel;
-        }
-      } else if (!res.ok) {
-        return { model: '', version, error: json?.error?.message || rawText };
+function buildChatPayload(
+  systemPrompt: string,
+  sanitizedUserMessage: string,
+  history?: Array<{ role: string; content: string }>
+): GeminiPayload {
+  const contents: GeminiContentMessage[] = [];
+  if (Array.isArray(history)) {
+    for (const item of history.slice(-8)) {
+      if (item.content?.trim()) {
+        contents.push({
+          role: item.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: sanitizeUserPrompt(item.content) }],
+        });
       }
-    } catch {
-      // Continue
     }
   }
+  contents.push({ role: 'user', parts: [{ text: sanitizedUserMessage }] });
 
-  return { model: userModel || 'gemini-1.5-flash', version: 'v1beta' };
+  return {
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents,
+    generationConfig: { temperature: 0.7, maxOutputTokens: 1000 },
+  };
+}
+
+function resolveApiKey(): string | undefined {
+  const envKey = process.env.GEMINI_API_KEY;
+  return (envKey !== undefined ? envKey.trim() : serverConfig.GEMINI_API_KEY) || undefined;
+}
+
+function checkFaqCache(
+  key: string,
+  canCache: boolean
+): { reply: string; model: string } | null {
+  if (!canCache) return null;
+  const cached = aiResponseCache.get(key);
+  if (cached && Date.now() - cached.timestamp < AI_FAQ_CACHE_TTL_MS) {
+    return { reply: cached.reply, model: cached.model };
+  }
+  return null;
+}
+
+function sendStandardFallback(res: ServerResponse): void {
+  sendJson(res, 200, {
+    status: 'notice',
+    reply:
+      '• Keep windows closed during peak morning inversion hours (6 AM - 10 AM).\n• Run bedroom HEPA air purifiers continuously when ambient AQI is elevated.\n• Wear an N95 mask when commuting on two-wheelers or walking outdoors.\n\n*(Notice: Live Gemini models are currently experiencing peak demand. Providing verified clean-air advisory.)*',
+    model: 'fallback-advisor',
+    isFallback: true,
+  });
+}
+
+function sendChatOutcome(
+  res: ServerResponse,
+  outcome: ReturnType<typeof queryGeminiCandidateModels> extends Promise<infer T> ? T : never,
+  cleanModel: string,
+  cacheKey: string,
+  canCache: boolean
+): void {
+  if (outcome?.success && outcome.reply) {
+    if (canCache && !outcome.isFallback) {
+      aiResponseCache.set(cacheKey, {
+        reply: outcome.reply,
+        model: outcome.model || cleanModel,
+        timestamp: Date.now(),
+      });
+    }
+    sendJson(res, 200, {
+      status: 'success',
+      reply: outcome.reply,
+      model: outcome.model,
+      isFallback: outcome.isFallback,
+    });
+    return;
+  }
+
+  if (outcome?.errorStatus && outcome.errorMessage) {
+    sendError(res, outcome.errorStatus, 'UPSTREAM_GEMINI_ERROR', outcome.errorMessage);
+    return;
+  }
+
+  sendStandardFallback(res);
 }
 
 export async function handleChatRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const rawBody = await parseBody(req);
   const parsed = ChatRequestSchema.safeParse(rawBody);
-
   if (!parsed.success) {
     sendError(res, 400, 'INVALID_INPUT', parsed.error.issues[0]?.message || 'Invalid chat request structure.');
     return;
@@ -86,8 +150,7 @@ export async function handleChatRequest(req: IncomingMessage, res: ServerRespons
 
   const { message, history, context } = parsed.data;
   const sanitizedUserMessage = sanitizeUserPrompt(message);
-
-  const apiKey = (process.env.GEMINI_API_KEY !== undefined ? process.env.GEMINI_API_KEY.trim() : serverConfig.GEMINI_API_KEY) || undefined;
+  const apiKey = resolveApiKey();
   if (!apiKey) {
     sendJson(res, 200, {
       status: 'notice',
@@ -103,99 +166,16 @@ export async function handleChatRequest(req: IncomingMessage, res: ServerRespons
     return;
   }
 
-  const systemPrompt = buildSystemInstruction(context);
-  const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
-
-  if (Array.isArray(history)) {
-    for (const item of history.slice(-8)) {
-      if (item.content?.trim()) {
-        contents.push({
-          role: item.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: sanitizeUserPrompt(item.content) }],
-        });
-      }
-    }
-  }
-  contents.push({ role: 'user', parts: [{ text: sanitizedUserMessage }] });
-
-  const payload = {
-    systemInstruction: { parts: [{ text: systemPrompt }] },
-    contents,
-    generationConfig: { temperature: 0.7, maxOutputTokens: 1000 },
-  };
-
   const cleanModel = modelInfo.model.replace(/^models\//, '');
   const canCache = (!history || history.length === 0) && !context?.profile;
   const cacheKey = `ai_faq_${cleanModel}_${sanitizedUserMessage.toLowerCase()}`;
-
-  if (canCache) {
-    const cached = aiResponseCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < AI_FAQ_CACHE_TTL_MS) {
-      sendJson(res, 200, {
-        status: 'success',
-        reply: cached.reply,
-        model: cached.model,
-      });
-      return;
-    }
+  const cached = checkFaqCache(cacheKey, canCache);
+  if (cached) {
+    sendJson(res, 200, { status: 'success', reply: cached.reply, model: cached.model });
+    return;
   }
 
-  const candidateModels = [
-    modelInfo.model,
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
-    'gemini-1.5-flash',
-  ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
-
-  for (const model of candidateModels) {
-    const cleanModel = model.replace(/^models\//, '');
-    const url = `https://generativelanguage.googleapis.com/${modelInfo.version}/models/${encodeURIComponent(cleanModel)}:generateContent?key=${apiKey}`;
-
-    try {
-      const response = await safeFetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-        body: JSON.stringify(payload),
-      });
-
-      if (!response.ok) {
-        if (response.status === 503 || response.status === 429 || response.status === 404) {
-          continue;
-        }
-        const errorText = await response.text();
-        let parsedMsg = errorText;
-        try {
-          const errObj = JSON.parse(errorText);
-          if (errObj?.error?.message) parsedMsg = errObj.error.message;
-        } catch {}
-        sendError(res, response.status, 'UPSTREAM_GEMINI_ERROR', parsedMsg);
-        return;
-      }
-
-      const data = (await response.json()) as any;
-      const rawReply = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      const sanitizedOutput = validateAndSanitizeAiOutput(rawReply, cleanModel);
-
-      if (canCache && !sanitizedOutput.isFallback) {
-        aiResponseCache.set(cacheKey, { reply: sanitizedOutput.reply, model: cleanModel, timestamp: Date.now() });
-      }
-
-      sendJson(res, 200, {
-        status: 'success',
-        reply: sanitizedOutput.reply,
-        model: sanitizedOutput.model,
-        isFallback: sanitizedOutput.isFallback,
-      });
-      return;
-    } catch {
-      // Try next candidate model
-    }
-  }
-
-  sendJson(res, 200, {
-    status: 'notice',
-    reply: '• Keep windows closed during peak morning inversion hours (6 AM - 10 AM).\n• Run bedroom HEPA air purifiers continuously when ambient AQI is elevated.\n• Wear an N95 mask when commuting on two-wheelers or walking outdoors.\n\n*(Notice: Live Gemini models are currently experiencing peak demand. Providing verified clean-air advisory.)*',
-    model: 'fallback-advisor',
-    isFallback: true,
-  });
+  const payload = buildChatPayload(buildSystemInstruction(context), sanitizedUserMessage, history);
+  const outcome = await queryGeminiCandidateModels(apiKey, modelInfo, payload);
+  sendChatOutcome(res, outcome, cleanModel, cacheKey, canCache);
 }

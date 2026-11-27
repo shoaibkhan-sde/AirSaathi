@@ -1,16 +1,20 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { handleApiRequest } from './apiHandler.ts';
 
+interface ServerlessIncomingMessage extends IncomingMessage {
+  query?: Record<string, string | string[] | undefined>;
+}
+
 export default async function handler(
   req: IncomingMessage,
   res: ServerResponse
 ): Promise<void> {
-  const anyReq = req as any;
+  const reqWithQuery = req as ServerlessIncomingMessage;
 
   let url = req.url || '';
   if (url === '/api' || url === '/api/' || url.startsWith('/api?')) {
-    const route = anyReq.query?.__route || anyReq.query?.route;
-    if (route) {
+    const route = reqWithQuery.query?.__route || reqWithQuery.query?.route;
+    if (typeof route === 'string') {
       req.url = `/api/${route}`;
     } else if (req.headers['x-matched-path']) {
       req.url = req.headers['x-matched-path'] as string;

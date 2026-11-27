@@ -27,6 +27,23 @@ interface UseProfileSyncProps {
   showToast: (title: string, message?: string, type?: 'success' | 'info') => void;
 }
 
+function formatResolvedCityName(resolved: CityLocation, profile: UserProfile): void {
+  const isGeo = profile.locationSource === 'geolocation' || profile.city === 'Your location';
+  if (isGeo) {
+    const stateName = resolved.state || resolved.region || 'Maharashtra';
+    resolved.name = stateName ? `Your location, ${stateName}` : 'Your location';
+    resolved.city = 'Your location';
+  } else {
+    const cityName = resolved.city || resolved.name || profile.city;
+    const stateName = resolved.state || resolved.region || '';
+    resolved.name =
+      stateName && !cityName.toLowerCase().includes(stateName.toLowerCase())
+        ? `${cityName}, ${stateName}`
+        : cityName;
+    resolved.city = cityName;
+  }
+}
+
 export function useProfileSync({
   currentCity,
   setCurrentCity,
@@ -42,21 +59,7 @@ export function useProfileSync({
   );
 
   const applyResolvedLocation = (resolved: CityLocation, profile: UserProfile) => {
-    const isGeo = profile.locationSource === 'geolocation' || profile.city === 'Your location';
-    if (isGeo) {
-      const stateName = resolved.state || resolved.region || 'Maharashtra';
-      resolved.name = stateName ? `Your location, ${stateName}` : 'Your location';
-      resolved.city = 'Your location';
-    } else {
-      const cityName = resolved.city || resolved.name || profile.city;
-      const stateName = resolved.state || resolved.region || '';
-      resolved.name =
-        stateName && !cityName.toLowerCase().includes(stateName.toLowerCase())
-          ? `${cityName}, ${stateName}`
-          : cityName;
-      resolved.city = cityName;
-    }
-
+    formatResolvedCityName(resolved, profile);
     setCurrentCity(resolved);
     try {
       localStorage.setItem('airsaathi_current_city', JSON.stringify(resolved));

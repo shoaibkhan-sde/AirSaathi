@@ -26,41 +26,49 @@ export function sendError(
   sendJson(res, statusCode, errPayload);
 }
 
-export function parseBody(req: IncomingMessage): Promise<any> {
-  const anyReq = req as any;
-  if (anyReq.body !== undefined && anyReq.body !== null) {
-    if (typeof anyReq.body === 'string') {
-      if (!anyReq.body.trim()) return Promise.resolve({});
-      try {
-        return Promise.resolve(JSON.parse(anyReq.body));
-      } catch {
-        return Promise.reject({
-          statusCode: 400,
-          code: 'INVALID_JSON',
-          message: 'Malformed JSON payload in request body.',
-        });
-      }
-    }
-    return Promise.resolve(anyReq.body);
+interface ExtendedIncomingMessage extends IncomingMessage {
+  body?: unknown;
+}
+
+function parsePreParsedBody(req: IncomingMessage): unknown | null {
+  const reqWithBody = req as ExtendedIncomingMessage;
+  if (reqWithBody.body === undefined || reqWithBody.body === null) {
+    return null;
   }
-
-  return new Promise((resolve, reject) => {
-    const method = req.method?.toUpperCase();
-    if (method === 'POST' || method === 'PUT') {
-      const rawContentType = req.headers?.['content-type'];
-      const contentType = Array.isArray(rawContentType)
-        ? rawContentType[0] || ''
-        : rawContentType || '';
-      if (!contentType.toLowerCase().includes('application/json')) {
-        reject({
-          statusCode: 415,
-          code: 'INVALID_CONTENT_TYPE',
-          message: 'Content-Type must be application/json',
-        });
-        return;
-      }
+  if (typeof reqWithBody.body === 'string') {
+    if (!reqWithBody.body.trim()) return {};
+    try {
+      return JSON.parse(reqWithBody.body);
+    } catch {
+      throw {
+        statusCode: 400,
+        code: 'INVALID_JSON',
+        message: 'Malformed JSON payload in request body.',
+      };
     }
+  }
+  return reqWithBody.body;
+}
 
+function validateContentType(req: IncomingMessage): void {
+  const method = req.method?.toUpperCase();
+  if (method === 'POST' || method === 'PUT') {
+    const rawContentType = req.headers?.['content-type'];
+    const contentType = Array.isArray(rawContentType)
+      ? rawContentType[0] || ''
+      : rawContentType || '';
+    if (!contentType.toLowerCase().includes('application/json')) {
+      throw {
+        statusCode: 415,
+        code: 'INVALID_CONTENT_TYPE',
+        message: 'Content-Type must be application/json',
+      };
+    }
+  }
+}
+
+function readBodyStream(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
     let body = '';
     let totalBytes = 0;
 
@@ -96,6 +104,15 @@ export function parseBody(req: IncomingMessage): Promise<any> {
 
     req.on('error', (err: unknown) => reject(err));
   });
+}
+
+export async function parseBody(req: IncomingMessage): Promise<unknown> {
+  const preParsed = parsePreParsedBody(req);
+  if (preParsed !== null) {
+    return preParsed;
+  }
+  validateContentType(req);
+  return readBodyStream(req);
 }
 
 export function mapErrorStatus(err: { statusCode?: number; code?: string }): number {

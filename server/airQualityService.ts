@@ -82,7 +82,10 @@ export async function fetchCurrentAirQuality(
     });
   } catch (err: unknown) {
     const isTimeout =
-      (typeof err === 'object' && err !== null && (err as any).code === 'UPSTREAM_TIMEOUT') ||
+      (typeof err === 'object' &&
+        err !== null &&
+        'code' in err &&
+        (err as { code: unknown }).code === 'UPSTREAM_TIMEOUT') ||
       (err instanceof Error && err.name === 'AbortError');
     throw {
       code: isTimeout ? 'UPSTREAM_TIMEOUT' : 'AIR_QUALITY_UNAVAILABLE',

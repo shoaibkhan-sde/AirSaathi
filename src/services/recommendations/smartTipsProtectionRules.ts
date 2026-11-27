@@ -104,47 +104,43 @@ export function buildHouseholdMemberCard(
   };
 }
 
-export function buildVentilationCard(profile: UserProfile | null): HouseholdProtectionCard {
-  const isSolid = /wood|biomass|coal|kerosene/i.test(
-    `${profile?.cookingFuel || ''} ${profile?.heatingFuel || ''}`
-  );
-  if (isSolid) {
-    return {
-      id: 'prot-vent-solid',
-      tag: 'Combustion Safety',
-      title: 'Maintain Dedicated Solid-Fuel Exhaust',
-      description:
-        'Solid biomass produces dangerous carbon monoxide and fine soot. Ensure active, unblocked outdoor venting.',
-      iconType: 'flame',
-      priority: 'High',
-    };
-  }
+function buildSolidFuelVentCard(): HouseholdProtectionCard {
+  return {
+    id: 'prot-vent-solid',
+    tag: 'Combustion Safety',
+    title: 'Maintain Dedicated Solid-Fuel Exhaust',
+    description:
+      'Solid biomass produces dangerous carbon monoxide and fine soot. Ensure active, unblocked outdoor venting.',
+    iconType: 'flame',
+    priority: 'High',
+  };
+}
 
-  const hasPurifier = Boolean(profile?.hasAirPurifier);
-  if (hasPurifier) {
-    return {
-      id: 'prot-vent-purifier',
-      tag: 'Indoor Filtration',
-      title: 'Run HEPA Purifier in Occupied Rooms',
-      description:
-        'Mechanical HEPA filters capture microscopic particles down to 0.3 microns that settle on living furniture.',
-      iconType: 'wind',
-      priority: 'Medium',
-    };
-  }
+function buildPurifierVentCard(): HouseholdProtectionCard {
+  return {
+    id: 'prot-vent-purifier',
+    tag: 'Indoor Filtration',
+    title: 'Run HEPA Purifier in Occupied Rooms',
+    description:
+      'Mechanical HEPA filters capture microscopic particles down to 0.3 microns that settle on living furniture.',
+    iconType: 'wind',
+    priority: 'Medium',
+  };
+}
 
-  if (profile?.ventilationType === 'Open windows regularly') {
-    return {
-      id: 'prot-vent-windows',
-      tag: 'Window Management',
-      title: 'Time Window Ventilation to Clean Hours',
-      description:
-        'Because your household opens windows regularly, seal them during morning and evening inversions.',
-      iconType: 'wind',
-      priority: 'Medium',
-    };
-  }
+function buildWindowVentCard(): HouseholdProtectionCard {
+  return {
+    id: 'prot-vent-windows',
+    tag: 'Window Management',
+    title: 'Time Window Ventilation to Clean Hours',
+    description:
+      'Because your household opens windows regularly, seal them during morning and evening inversions.',
+    iconType: 'wind',
+    priority: 'Medium',
+  };
+}
 
+function buildDefaultDustCard(): HouseholdProtectionCard {
   return {
     id: 'prot-vent-dust',
     tag: 'Home Dust Control',
@@ -154,6 +150,16 @@ export function buildVentilationCard(profile: UserProfile | null): HouseholdProt
     iconType: 'wind',
     priority: 'Low',
   };
+}
+
+export function buildVentilationCard(profile: UserProfile | null): HouseholdProtectionCard {
+  const isSolid = /wood|biomass|coal|kerosene/i.test(
+    `${profile?.cookingFuel || ''} ${profile?.heatingFuel || ''}`
+  );
+  if (isSolid) return buildSolidFuelVentCard();
+  if (profile?.hasAirPurifier) return buildPurifierVentCard();
+  if (profile?.ventilationType === 'Open windows regularly') return buildWindowVentCard();
+  return buildDefaultDustCard();
 }
 
 export function buildPollutantCard(city: CityLocation): HouseholdProtectionCard {

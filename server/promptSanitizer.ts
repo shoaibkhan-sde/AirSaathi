@@ -1,5 +1,6 @@
 import { AIOutputSchema } from './validationSchemas.ts';
 
+// eslint-disable-next-line no-control-regex
 const CONTROL_CHARS_REGEX = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
 const INJECTION_PATTERNS = [

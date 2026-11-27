@@ -57,6 +57,21 @@ export async function forwardGeocodePin(query: string): Promise<ResolvedLocation
   }
 }
 
+interface OpenMeteoResultItem {
+  id: number;
+  name: string;
+  admin1?: string;
+  country?: string;
+  country_code?: string;
+  latitude: number;
+  longitude: number;
+  postcodes?: string[];
+}
+
+interface OpenMeteoSearchResponse {
+  results?: OpenMeteoResultItem[];
+}
+
 /**
  * Searches places via Open-Meteo Geocoding API.
  */
@@ -71,24 +86,24 @@ export async function forwardGeocodeOpenMeteo(
   if (countryCode && countryCode.length === 2) params.set('countryCode', countryCode);
   if (apiKey) params.set('apikey', apiKey);
 
-  let json: any = null;
+  let json: OpenMeteoSearchResponse | null = null;
   try {
     const res = await safeFetch(`${baseUrl}/v1/search?${params.toString()}`, {
       timeoutMs: OPEN_METEO_TIMEOUT_MS,
       headers: { Accept: 'application/json' },
     });
-    if (res.ok) json = await res.json();
+    if (res.ok) json = (await res.json()) as OpenMeteoSearchResponse;
   } catch {
     return null;
   }
 
   if (!json?.results || json.results.length === 0) return null;
   const primary = json.results[0];
-  const candidates: CandidateLocation[] = json.results.map((r: any) => ({
+  const candidates: CandidateLocation[] = json.results.map((r: OpenMeteoResultItem) => ({
     id: `geo_${r.id}`,
     name: r.name,
     region: r.admin1 || '',
-    country: r.country,
+    country: r.country || 'Unknown',
     countryCode: (r.country_code || countryCode || '').toUpperCase(),
     latitude: roundCoord(r.latitude),
     longitude: roundCoord(r.longitude),
@@ -101,7 +116,7 @@ export async function forwardGeocodeOpenMeteo(
     city: primary.name,
     region: primary.admin1 || '',
     state: primary.admin1 || '',
-    country: primary.country,
+    country: primary.country || 'Unknown',
     countryCode: (primary.country_code || countryCode || '').toUpperCase(),
     latitude: roundCoord(primary.latitude),
     longitude: roundCoord(primary.longitude),

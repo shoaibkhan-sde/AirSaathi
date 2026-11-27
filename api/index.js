@@ -376,7 +376,7 @@ async function forwardGeocodeOpenMeteo(query, countryCode) {
     id: `geo_${r.id}`,
     name: r.name,
     region: r.admin1 || "",
-    country: r.country,
+    country: r.country || "Unknown",
     countryCode: (r.country_code || countryCode || "").toUpperCase(),
     latitude: roundCoord(r.latitude),
     longitude: roundCoord(r.longitude),
@@ -388,7 +388,7 @@ async function forwardGeocodeOpenMeteo(query, countryCode) {
     city: primary.name,
     region: primary.admin1 || "",
     state: primary.admin1 || "",
-    country: primary.country,
+    country: primary.country || "Unknown",
     countryCode: (primary.country_code || countryCode || "").toUpperCase(),
     latitude: roundCoord(primary.latitude),
     longitude: roundCoord(primary.longitude),
@@ -455,14 +455,37 @@ function isValidCoordinate(lat, lon) {
 }
 function checkCache(cacheKey) {
   const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < DEFAULT_CACHE_TTL_MS) {
-    return cached.data;
-  }
-  return null;
+  return cached && Date.now() - cached.timestamp < DEFAULT_CACHE_TTL_MS ? cached.data : null;
 }
 function saveCache(cacheKey, data) {
   cache.set(cacheKey, { data, timestamp: Date.now() });
   return data;
+}
+function buildStaticResolved(query, match) {
+  const isPin = /^\d{4,6}$/.test(query);
+  return {
+    id: `loc_${match.city.toLowerCase()}`,
+    name: match.city,
+    city: match.city,
+    region: match.region,
+    state: match.region,
+    country: match.country,
+    countryCode: match.countryCode,
+    latitude: roundCoordinate(match.lat),
+    longitude: roundCoordinate(match.lon),
+    postcode: isPin ? query : match.pinCodes[0],
+    source: isPin ? "pin" : "manual",
+    precision: isPin ? "postal_code" : "city"
+  };
+}
+async function queryExternalGeocoders(query, code) {
+  if (/^\d{4,6}$/.test(query)) {
+    const pinRes = await forwardGeocodePin(query);
+    if (pinRes) return pinRes;
+  }
+  const openMeteoRes = await forwardGeocodeOpenMeteo(query, code);
+  if (openMeteoRes) return openMeteoRes;
+  return forwardGeocodeNominatim(query, code);
 }
 async function resolveForwardQuery(query, countryCode) {
   const code = countryCode ? countryCode.trim().toUpperCase() : "IN";
@@ -471,34 +494,20 @@ async function resolveForwardQuery(query, countryCode) {
   if (cached) return cached;
   const staticMatch = findStaticLocation(query);
   if (staticMatch) {
-    const isPin = /^\d{4,6}$/.test(query);
-    return saveCache(cacheKey, {
-      id: `loc_${staticMatch.city.toLowerCase()}`,
-      name: staticMatch.city,
-      city: staticMatch.city,
-      region: staticMatch.region,
-      state: staticMatch.region,
-      country: staticMatch.country,
-      countryCode: staticMatch.countryCode,
-      latitude: roundCoordinate(staticMatch.lat),
-      longitude: roundCoordinate(staticMatch.lon),
-      postcode: isPin ? query : staticMatch.pinCodes[0],
-      source: isPin ? "pin" : "manual",
-      precision: isPin ? "postal_code" : "city"
-    });
+    return saveCache(cacheKey, buildStaticResolved(query, staticMatch));
   }
-  if (/^\d{4,6}$/.test(query)) {
-    const pinRes = await forwardGeocodePin(query);
-    if (pinRes) return saveCache(cacheKey, pinRes);
-  }
-  const openMeteoRes = await forwardGeocodeOpenMeteo(query, code);
-  if (openMeteoRes) return saveCache(cacheKey, openMeteoRes);
-  const nominatimRes = await forwardGeocodeNominatim(query, code);
-  if (nominatimRes) return saveCache(cacheKey, nominatimRes);
+  const externalRes = await queryExternalGeocoders(query, code);
+  if (externalRes) return saveCache(cacheKey, externalRes);
   throw {
     code: "LOCATION_NOT_FOUND",
     message: `No matching places found for "${query}" in ${code}. Please check spelling or postal code.`
   };
+}
+function formatReverseDisplayName(settlement, rev) {
+  if (settlement === "Current Location") {
+    return rev?.district ? `Current Location (${rev.district})` : "Current Location";
+  }
+  return rev?.state && settlement !== rev.state ? `${settlement}, ${rev.state}` : settlement;
 }
 async function resolveReverseCoords(req) {
   if (!isValidCoordinate(req.latitude, req.longitude) || req.latitude === void 0 || req.longitude === void 0) {
@@ -516,10 +525,9 @@ async function resolveReverseCoords(req) {
   const settlement = rev?.city || "Current Location";
   const resolvedCountry = rev?.country || req.previousCountry || (req.countryCode === "IN" ? DEFAULT_COUNTRY : void 0);
   const resolvedCountryCode = rev?.countryCode || req.countryCode?.toUpperCase();
-  const displayName = settlement === "Current Location" ? rev?.district ? `Current Location (${rev.district})` : "Current Location" : rev?.state && settlement !== rev.state ? `${settlement}, ${rev.state}` : settlement;
   return saveCache(cacheKey, {
     id: `loc_${roundedLat}_${roundedLon}`,
-    name: displayName,
+    name: formatReverseDisplayName(settlement, rev),
     city: settlement,
     locality: rev?.locality,
     district: rev?.district,
@@ -540,12 +548,8 @@ async function resolveLocation(req) {
   const isExplicit = Boolean(
     query && query !== "Your location" && !query.toLowerCase().includes("device location") && !query.toLowerCase().includes("current location")
   );
-  if (isExplicit && query) {
-    return resolveForwardQuery(query, req.countryCode);
-  }
-  if (req.latitude !== void 0 && req.longitude !== void 0) {
-    return resolveReverseCoords(req);
-  }
+  if (isExplicit && query) return resolveForwardQuery(query, req.countryCode);
+  if (req.latitude !== void 0 && req.longitude !== void 0) return resolveReverseCoords(req);
   throw {
     code: "INVALID_INPUT",
     message: "Please provide either a valid city name, postal code, or device location."
@@ -601,7 +605,7 @@ async function fetchCurrentAirQuality(latitude, longitude, countryCode) {
       headers: { Accept: "application/json" }
     });
   } catch (err) {
-    const isTimeout = typeof err === "object" && err !== null && err.code === "UPSTREAM_TIMEOUT" || err instanceof Error && err.name === "AbortError";
+    const isTimeout = typeof err === "object" && err !== null && "code" in err && err.code === "UPSTREAM_TIMEOUT" || err instanceof Error && err.name === "AbortError";
     throw {
       code: isTimeout ? "UPSTREAM_TIMEOUT" : "AIR_QUALITY_UNAVAILABLE",
       message: isTimeout ? "Open-Meteo Air Quality service timed out. Please try again." : "Open-Meteo Air Quality service is currently unreachable."
@@ -705,38 +709,36 @@ function buildOutdoorRec(aqi, isVulnerable, affected, commute) {
     completed: false
   };
 }
-function buildCommuteRec(commute, aqi) {
-  const isHigh = aqi > HIGH_AQI_THRESHOLD;
-  const c = commute.toLowerCase();
-  if (c.includes("walk") || c.includes("cycl") || c.includes("bicycle")) {
-    return {
-      id: isHigh ? "rec-commute-active-smog" : "rec-commute-active-clean",
-      title: isHigh ? "Choose tree-lined corridors or certified barrier for active commute" : "Active commuting keeps community emissions low",
-      description: isHigh ? "Take secondary streets with dense roadside canopy, and consider an N95 respirator." : "Your walking or cycling avoids fossil combustion, directly benefiting neighborhood air.",
-      whyItMatters: isHigh ? "Active breathing near diesel transit directly exposes airways to freshly combusted soot." : "Zero-emission commutes reduce localized street-canyon NO\u2082 and particulate concentrations.",
-      alternative: isHigh ? "Ride shared metro or electric transit on high smog mornings." : void 0,
-      effort: isHigh ? "Medium" : "Low",
-      priority: isHigh ? "High" : "Medium",
-      relevantProfileFactors: isHigh ? ["Active walking/cycling commute", `Elevated AQI (${aqi})`] : ["Walking/cycling commute"],
-      sourceCategory: isHigh ? "Commute Optimization" : "Community Impact",
-      saved: false,
-      completed: false
-    };
-  }
-  if (c.includes("car") || c.includes("taxi")) {
-    return {
-      id: "rec-commute-car-recirc",
-      title: "Enable in-cabin air recirculation in congested queues",
-      description: "Set your car air system to internal recirculation mode when idling near heavy diesel vehicles.",
-      whyItMatters: "Without recirculation, cabin fan intakes pull tailpipe exhaust directly into the passenger cabin.",
-      effort: "Low",
-      priority: isHigh ? "High" : "Medium",
-      relevantProfileFactors: ["Car/taxi commuter", `Ambient AQI (${aqi})`],
-      sourceCategory: "In-Cabin Protection",
-      saved: false,
-      completed: false
-    };
-  }
+function buildActiveCommuteRec(isHigh, aqi) {
+  return {
+    id: isHigh ? "rec-commute-active-smog" : "rec-commute-active-clean",
+    title: isHigh ? "Choose tree-lined corridors or certified barrier for active commute" : "Active commuting keeps community emissions low",
+    description: isHigh ? "Take secondary streets with dense roadside canopy, and consider an N95 respirator." : "Your walking or cycling avoids fossil combustion, directly benefiting neighborhood air.",
+    whyItMatters: isHigh ? "Active breathing near diesel transit directly exposes airways to freshly combusted soot." : "Zero-emission commutes reduce localized street-canyon NO\u2082 and particulate concentrations.",
+    alternative: isHigh ? "Ride shared metro or electric transit on high smog mornings." : void 0,
+    effort: isHigh ? "Medium" : "Low",
+    priority: isHigh ? "High" : "Medium",
+    relevantProfileFactors: isHigh ? ["Active walking/cycling commute", `Elevated AQI (${aqi})`] : ["Walking/cycling commute"],
+    sourceCategory: isHigh ? "Commute Optimization" : "Community Impact",
+    saved: false,
+    completed: false
+  };
+}
+function buildVehicleCommuteRec(isHigh, aqi) {
+  return {
+    id: "rec-commute-car-recirc",
+    title: "Enable in-cabin air recirculation in congested queues",
+    description: "Set your car air system to internal recirculation mode when idling near heavy diesel vehicles.",
+    whyItMatters: "Without recirculation, cabin fan intakes pull tailpipe exhaust directly into the passenger cabin.",
+    effort: "Low",
+    priority: isHigh ? "High" : "Medium",
+    relevantProfileFactors: ["Car/taxi commuter", `Ambient AQI (${aqi})`],
+    sourceCategory: "In-Cabin Protection",
+    saved: false,
+    completed: false
+  };
+}
+function buildGeneralTransitCommuteRec(isHigh, commute) {
   return {
     id: "rec-commute-general",
     title: isHigh ? "Wear mask during open platform transit transfers" : "Shared transit reduces per-passenger emissions",
@@ -749,6 +751,17 @@ function buildCommuteRec(commute, aqi) {
     saved: false,
     completed: false
   };
+}
+function buildCommuteRec(commute, aqi) {
+  const isHigh = aqi > HIGH_AQI_THRESHOLD;
+  const c = commute.toLowerCase();
+  if (c.includes("walk") || c.includes("cycl") || c.includes("bicycle")) {
+    return buildActiveCommuteRec(isHigh, aqi);
+  }
+  if (c.includes("car") || c.includes("taxi")) {
+    return buildVehicleCommuteRec(isHigh, aqi);
+  }
+  return buildGeneralTransitCommuteRec(isHigh, commute);
 }
 
 // server/indoorRecommendationBuilders.ts
@@ -861,37 +874,41 @@ function sendError(res, statusCode, code, message, details) {
   };
   sendJson(res, statusCode, errPayload);
 }
-function parseBody(req) {
-  const anyReq = req;
-  if (anyReq.body !== void 0 && anyReq.body !== null) {
-    if (typeof anyReq.body === "string") {
-      if (!anyReq.body.trim()) return Promise.resolve({});
-      try {
-        return Promise.resolve(JSON.parse(anyReq.body));
-      } catch {
-        return Promise.reject({
-          statusCode: 400,
-          code: "INVALID_JSON",
-          message: "Malformed JSON payload in request body."
-        });
-      }
-    }
-    return Promise.resolve(anyReq.body);
+function parsePreParsedBody(req) {
+  const reqWithBody = req;
+  if (reqWithBody.body === void 0 || reqWithBody.body === null) {
+    return null;
   }
-  return new Promise((resolve, reject) => {
-    const method = req.method?.toUpperCase();
-    if (method === "POST" || method === "PUT") {
-      const rawContentType = req.headers?.["content-type"];
-      const contentType = Array.isArray(rawContentType) ? rawContentType[0] || "" : rawContentType || "";
-      if (!contentType.toLowerCase().includes("application/json")) {
-        reject({
-          statusCode: 415,
-          code: "INVALID_CONTENT_TYPE",
-          message: "Content-Type must be application/json"
-        });
-        return;
-      }
+  if (typeof reqWithBody.body === "string") {
+    if (!reqWithBody.body.trim()) return {};
+    try {
+      return JSON.parse(reqWithBody.body);
+    } catch {
+      throw {
+        statusCode: 400,
+        code: "INVALID_JSON",
+        message: "Malformed JSON payload in request body."
+      };
     }
+  }
+  return reqWithBody.body;
+}
+function validateContentType(req) {
+  const method = req.method?.toUpperCase();
+  if (method === "POST" || method === "PUT") {
+    const rawContentType = req.headers?.["content-type"];
+    const contentType = Array.isArray(rawContentType) ? rawContentType[0] || "" : rawContentType || "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+      throw {
+        statusCode: 415,
+        code: "INVALID_CONTENT_TYPE",
+        message: "Content-Type must be application/json"
+      };
+    }
+  }
+}
+function readBodyStream(req) {
+  return new Promise((resolve, reject) => {
     let body = "";
     let totalBytes = 0;
     req.on("data", (chunk) => {
@@ -924,6 +941,14 @@ function parseBody(req) {
     });
     req.on("error", (err) => reject(err));
   });
+}
+async function parseBody(req) {
+  const preParsed = parsePreParsedBody(req);
+  if (preParsed !== null) {
+    return preParsed;
+  }
+  validateContentType(req);
+  return readBodyStream(req);
 }
 function mapErrorStatus(err) {
   if (err.statusCode) return err.statusCode;
@@ -1078,20 +1103,24 @@ function validateAndSanitizeAiOutput(rawText, modelName) {
   return { reply: parsed.data.reply, model: modelName };
 }
 
-// server/geminiChatService.ts
+// server/geminiModelProvider.ts
 var cachedWorkingModel = null;
-var aiResponseCache = /* @__PURE__ */ new Map();
-var AI_FAQ_CACHE_TTL_MS = 60 * 60 * 1e3;
-function buildSystemInstruction(context) {
-  const city = context?.city;
-  const profile = context?.profile;
-  const activePage = context?.activePage || "home";
-  const loc = city?.name ? `Location: ${city.name} | US AQI: ${city.aqi ?? "N/A"} (${city.category ?? "Unknown"}) | PM2.5: ${city.pm2_5 ?? "N/A"} \xB5g/m\xB3` : "Location: Not selected";
-  const prof = profile ? `Profile: Home: ${profile.homeType || "standard"}, Cooking: ${profile.cookingFuel || "standard"}, Purifier: ${profile.hasAirPurifier ? "Yes" : "No"}` : "Profile: Standard default";
-  return `You are "AirSaathi Assistant", an intelligent air-quality companion for the AirSaathi web app.
-App sections: Home, Smart Tips, Indoor Air (never fabricate indoor AQI), Sustainability, Settings.
-Context: Tab: ${activePage} | ${loc} | ${prof}
-Guidance: Friendly, clear, concise English with bullet points using the bullet character (\u2022). Do not use raw asterisks (*) or asterisk-wrapped bolding (**). General exposure reduction only, no medical prescribing.`;
+var PREFERRED_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+function parseModelListResponse(rawText) {
+  try {
+    return JSON.parse(rawText);
+  } catch {
+    return null;
+  }
+}
+function selectBestModel(genModels, userModel) {
+  if (userModel && genModels.includes(userModel)) {
+    return userModel;
+  }
+  for (const preferred of PREFERRED_MODELS) {
+    if (genModels.includes(preferred)) return preferred;
+  }
+  return genModels[0];
 }
 async function getActiveGeminiModel(apiKey) {
   if (cachedWorkingModel) return cachedWorkingModel;
@@ -1099,30 +1128,15 @@ async function getActiveGeminiModel(apiKey) {
   for (const version of ["v1beta", "v1"]) {
     try {
       const url = `https://generativelanguage.googleapis.com/${version}/models?key=${apiKey}`;
-      const res = await safeFetch(url, { headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" } });
+      const res = await safeFetch(url, {
+        headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" }
+      });
       const rawText = await res.text();
-      let json = null;
-      try {
-        json = JSON.parse(rawText);
-      } catch {
-        json = null;
-      }
+      const json = parseModelListResponse(rawText);
       if (res.ok && json?.models && Array.isArray(json.models)) {
-        const genModels = json.models.filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent")).map((m) => String(m.name).replace(/^models\//, ""));
+        const genModels = json.models.filter((m) => m.supportedGenerationMethods?.includes("generateContent")).map((m) => m.name.replace(/^models\//, ""));
         if (genModels.length > 0) {
-          const preferred = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
-          if (userModel && genModels.includes(userModel)) {
-            cachedWorkingModel = { model: userModel, version };
-            return cachedWorkingModel;
-          }
-          let chosen = genModels[0];
-          for (const p of preferred) {
-            if (genModels.includes(p)) {
-              chosen = p;
-              break;
-            }
-          }
-          cachedWorkingModel = { model: chosen, version };
+          cachedWorkingModel = { model: selectBestModel(genModels, userModel), version };
           return cachedWorkingModel;
         }
       } else if (!res.ok) {
@@ -1133,6 +1147,135 @@ async function getActiveGeminiModel(apiKey) {
   }
   return { model: userModel || "gemini-1.5-flash", version: "v1beta" };
 }
+async function attemptGeminiRequest(url, apiKey, payload, modelName) {
+  try {
+    const response = await safeFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      if (response.status === 503 || response.status === 429 || response.status === 404) {
+        return null;
+      }
+      const errorText = await response.text();
+      let parsedMsg = errorText;
+      try {
+        const errObj = JSON.parse(errorText);
+        if (errObj?.error?.message) parsedMsg = errObj.error.message;
+      } catch {
+      }
+      return { success: false, errorStatus: response.status, errorMessage: parsedMsg };
+    }
+    const data = await response.json();
+    const rawReply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const sanitized = validateAndSanitizeAiOutput(rawReply, modelName);
+    return {
+      success: true,
+      reply: sanitized.reply,
+      model: sanitized.model,
+      isFallback: sanitized.isFallback
+    };
+  } catch {
+    return null;
+  }
+}
+async function queryGeminiCandidateModels(apiKey, modelInfo, payload) {
+  const candidateModels = [
+    modelInfo.model,
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash"
+  ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
+  for (const model of candidateModels) {
+    const cleanModel = model.replace(/^models\//, "");
+    const url = `https://generativelanguage.googleapis.com/${modelInfo.version}/models/${encodeURIComponent(cleanModel)}:generateContent?key=${apiKey}`;
+    const result = await attemptGeminiRequest(url, apiKey, payload, cleanModel);
+    if (result) return result;
+  }
+  return null;
+}
+
+// server/geminiChatService.ts
+var aiResponseCache = /* @__PURE__ */ new Map();
+var AI_FAQ_CACHE_TTL_MS = 60 * 60 * 1e3;
+function formatContextDescription(context) {
+  const city = context?.city;
+  const profile = context?.profile;
+  const page = context?.activePage || "home";
+  const loc = city?.name ? `Location: ${city.name} | US AQI: ${city.aqi ?? "N/A"} (${city.category ?? "Unknown"}) | PM2.5: ${city.pm2_5 ?? "N/A"} \xB5g/m\xB3` : "Location: Not selected";
+  const prof = profile ? `Profile: Home: ${profile.homeType || "standard"}, Cooking: ${profile.cookingFuel || "standard"}, Purifier: ${profile.hasAirPurifier ? "Yes" : "No"}` : "Profile: Standard default";
+  return { loc, prof, page };
+}
+function buildSystemInstruction(context) {
+  const { loc, prof, page } = formatContextDescription(context);
+  return `You are "AirSaathi Assistant", an intelligent air-quality companion for the AirSaathi web app.
+App sections: Home, Smart Tips, Indoor Air (never fabricate indoor AQI), Sustainability, Settings.
+Context: Tab: ${page} | ${loc} | ${prof}
+Guidance: Friendly, clear, concise English with bullet points using the bullet character (\u2022). Do not use raw asterisks (*) or asterisk-wrapped bolding (**). General exposure reduction only, no medical prescribing.`;
+}
+function buildChatPayload(systemPrompt, sanitizedUserMessage, history) {
+  const contents = [];
+  if (Array.isArray(history)) {
+    for (const item of history.slice(-8)) {
+      if (item.content?.trim()) {
+        contents.push({
+          role: item.role === "assistant" ? "model" : "user",
+          parts: [{ text: sanitizeUserPrompt(item.content) }]
+        });
+      }
+    }
+  }
+  contents.push({ role: "user", parts: [{ text: sanitizedUserMessage }] });
+  return {
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents,
+    generationConfig: { temperature: 0.7, maxOutputTokens: 1e3 }
+  };
+}
+function resolveApiKey() {
+  const envKey = process.env.GEMINI_API_KEY;
+  return (envKey !== void 0 ? envKey.trim() : serverConfig.GEMINI_API_KEY) || void 0;
+}
+function checkFaqCache(key, canCache) {
+  if (!canCache) return null;
+  const cached = aiResponseCache.get(key);
+  if (cached && Date.now() - cached.timestamp < AI_FAQ_CACHE_TTL_MS) {
+    return { reply: cached.reply, model: cached.model };
+  }
+  return null;
+}
+function sendStandardFallback(res) {
+  sendJson(res, 200, {
+    status: "notice",
+    reply: "\u2022 Keep windows closed during peak morning inversion hours (6 AM - 10 AM).\n\u2022 Run bedroom HEPA air purifiers continuously when ambient AQI is elevated.\n\u2022 Wear an N95 mask when commuting on two-wheelers or walking outdoors.\n\n*(Notice: Live Gemini models are currently experiencing peak demand. Providing verified clean-air advisory.)*",
+    model: "fallback-advisor",
+    isFallback: true
+  });
+}
+function sendChatOutcome(res, outcome, cleanModel, cacheKey, canCache) {
+  if (outcome?.success && outcome.reply) {
+    if (canCache && !outcome.isFallback) {
+      aiResponseCache.set(cacheKey, {
+        reply: outcome.reply,
+        model: outcome.model || cleanModel,
+        timestamp: Date.now()
+      });
+    }
+    sendJson(res, 200, {
+      status: "success",
+      reply: outcome.reply,
+      model: outcome.model,
+      isFallback: outcome.isFallback
+    });
+    return;
+  }
+  if (outcome?.errorStatus && outcome.errorMessage) {
+    sendError(res, outcome.errorStatus, "UPSTREAM_GEMINI_ERROR", outcome.errorMessage);
+    return;
+  }
+  sendStandardFallback(res);
+}
 async function handleChatRequest(req, res) {
   const rawBody = await parseBody(req);
   const parsed = ChatRequestSchema.safeParse(rawBody);
@@ -1142,7 +1285,7 @@ async function handleChatRequest(req, res) {
   }
   const { message, history, context } = parsed.data;
   const sanitizedUserMessage = sanitizeUserPrompt(message);
-  const apiKey = (process.env.GEMINI_API_KEY !== void 0 ? process.env.GEMINI_API_KEY.trim() : serverConfig.GEMINI_API_KEY) || void 0;
+  const apiKey = resolveApiKey();
   if (!apiKey) {
     sendJson(res, 200, {
       status: "notice",
@@ -1156,89 +1299,17 @@ async function handleChatRequest(req, res) {
     sendError(res, 400, "UPSTREAM_GEMINI_ERROR", `Google Gemini setup required: ${modelInfo.error}`);
     return;
   }
-  const systemPrompt = buildSystemInstruction(context);
-  const contents = [];
-  if (Array.isArray(history)) {
-    for (const item of history.slice(-8)) {
-      if (item.content?.trim()) {
-        contents.push({
-          role: item.role === "assistant" ? "model" : "user",
-          parts: [{ text: sanitizeUserPrompt(item.content) }]
-        });
-      }
-    }
-  }
-  contents.push({ role: "user", parts: [{ text: sanitizedUserMessage }] });
-  const payload = {
-    systemInstruction: { parts: [{ text: systemPrompt }] },
-    contents,
-    generationConfig: { temperature: 0.7, maxOutputTokens: 1e3 }
-  };
   const cleanModel = modelInfo.model.replace(/^models\//, "");
   const canCache = (!history || history.length === 0) && !context?.profile;
   const cacheKey = `ai_faq_${cleanModel}_${sanitizedUserMessage.toLowerCase()}`;
-  if (canCache) {
-    const cached = aiResponseCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < AI_FAQ_CACHE_TTL_MS) {
-      sendJson(res, 200, {
-        status: "success",
-        reply: cached.reply,
-        model: cached.model
-      });
-      return;
-    }
+  const cached = checkFaqCache(cacheKey, canCache);
+  if (cached) {
+    sendJson(res, 200, { status: "success", reply: cached.reply, model: cached.model });
+    return;
   }
-  const candidateModels = [
-    modelInfo.model,
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash"
-  ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
-  for (const model of candidateModels) {
-    const cleanModel2 = model.replace(/^models\//, "");
-    const url = `https://generativelanguage.googleapis.com/${modelInfo.version}/models/${encodeURIComponent(cleanModel2)}:generateContent?key=${apiKey}`;
-    try {
-      const response = await safeFetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) {
-        if (response.status === 503 || response.status === 429 || response.status === 404) {
-          continue;
-        }
-        const errorText = await response.text();
-        let parsedMsg = errorText;
-        try {
-          const errObj = JSON.parse(errorText);
-          if (errObj?.error?.message) parsedMsg = errObj.error.message;
-        } catch {
-        }
-        sendError(res, response.status, "UPSTREAM_GEMINI_ERROR", parsedMsg);
-        return;
-      }
-      const data = await response.json();
-      const rawReply = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      const sanitizedOutput = validateAndSanitizeAiOutput(rawReply, cleanModel2);
-      if (canCache && !sanitizedOutput.isFallback) {
-        aiResponseCache.set(cacheKey, { reply: sanitizedOutput.reply, model: cleanModel2, timestamp: Date.now() });
-      }
-      sendJson(res, 200, {
-        status: "success",
-        reply: sanitizedOutput.reply,
-        model: sanitizedOutput.model,
-        isFallback: sanitizedOutput.isFallback
-      });
-      return;
-    } catch {
-    }
-  }
-  sendJson(res, 200, {
-    status: "notice",
-    reply: "\u2022 Keep windows closed during peak morning inversion hours (6 AM - 10 AM).\n\u2022 Run bedroom HEPA air purifiers continuously when ambient AQI is elevated.\n\u2022 Wear an N95 mask when commuting on two-wheelers or walking outdoors.\n\n*(Notice: Live Gemini models are currently experiencing peak demand. Providing verified clean-air advisory.)*",
-    model: "fallback-advisor",
-    isFallback: true
-  });
+  const payload = buildChatPayload(buildSystemInstruction(context), sanitizedUserMessage, history);
+  const outcome = await queryGeminiCandidateModels(apiKey, modelInfo, payload);
+  sendChatOutcome(res, outcome, cleanModel, cacheKey, canCache);
 }
 
 // server/securityHeaders.ts
@@ -1475,12 +1546,13 @@ async function handleApiRequest(req, res) {
     sendError(res, 404, "INVALID_INPUT", `API endpoint ${req.method} ${url} does not exist.`);
     return true;
   } catch (err) {
-    const status = mapErrorStatus(err);
+    const errorObj = typeof err === "object" && err !== null ? err : {};
+    const status = mapErrorStatus(errorObj);
     sendError(
       res,
       status,
-      err.code || "INTERNAL_ERROR",
-      err.message || "An unexpected backend processing error occurred."
+      errorObj.code || "INTERNAL_ERROR",
+      errorObj.message || "An unexpected backend processing error occurred."
     );
     return true;
   }
@@ -1488,11 +1560,11 @@ async function handleApiRequest(req, res) {
 
 // server/serverlessHandler.ts
 async function handler(req, res) {
-  const anyReq = req;
+  const reqWithQuery = req;
   let url = req.url || "";
   if (url === "/api" || url === "/api/" || url.startsWith("/api?")) {
-    const route = anyReq.query?.__route || anyReq.query?.route;
-    if (route) {
+    const route = reqWithQuery.query?.__route || reqWithQuery.query?.route;
+    if (typeof route === "string") {
       req.url = `/api/${route}`;
     } else if (req.headers["x-matched-path"]) {
       req.url = req.headers["x-matched-path"];

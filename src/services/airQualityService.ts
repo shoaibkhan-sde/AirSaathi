@@ -24,7 +24,7 @@ interface ClientAQICacheEntry {
 
 const clientAqiCache = new Map<string, ClientAQICacheEntry>();
 const inFlightAqiRequests = new Map<string, Promise<CityLocation>>();
-export const CLIENT_AQI_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL
+export const CLIENT_AQI_CACHE_TTL_MS = 15 * 60 * 1000;
 
 export function clearClientAQICache(): void {
   clientAqiCache.clear();
@@ -36,17 +36,53 @@ export function getAQICategory(aqi: number): AQICategory {
   return (found ? found.category : 'Severe') as AQICategory;
 }
 
-export async function resolveLocationAQI(
+async function fetchApiLocationAqi(
   query: string,
-  country: string = 'India',
+  country: string,
+  rounded?: { lat: number; lon: number }
+): Promise<CityLocation | null> {
+  try {
+    const locRes = await fetch('/api/location/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: query.trim() || undefined,
+        countryCode: country === 'India' ? 'IN' : undefined,
+        previousCountry: country,
+        latitude: rounded?.lat,
+        longitude: rounded?.lon,
+      }),
+    });
+    if (!locRes.ok) return null;
+
+    const loc = (await locRes.json()).location;
+    const aqiRes = await fetch('/api/air-quality/current', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+        countryCode: loc.countryCode,
+      }),
+    });
+    if (!aqiRes.ok) return null;
+
+    const aqiData = (await aqiRes.json()).airQuality;
+    return buildResolvedLocation(loc, aqiData, loc.latitude, loc.longitude);
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveLocationAQI(
+  query = 'Delhi',
+  country = 'India',
   coords?: { lat: number; lon: number }
 ): Promise<CityLocation> {
-  const isExplicit = Boolean(
-    query &&
-    query.trim() !== 'Your location' &&
-    !query.toLowerCase().includes('device location') &&
-    !query.toLowerCase().includes('current location')
-  );
+  const isExplicit =
+    query.trim() &&
+    query.trim().toLowerCase() !== 'your location' &&
+    query.trim().toLowerCase() !== 'current location';
 
   const rounded =
     !isExplicit && coords && Number.isFinite(coords.lat) && Number.isFinite(coords.lon)
@@ -63,50 +99,14 @@ export async function resolveLocationAQI(
   }
 
   const existing = inFlightAqiRequests.get(cacheKey);
-  if (existing) {
-    return existing;
-  }
+  if (existing) return existing;
 
   const fetchPromise = (async () => {
-    try {
-      const locRes = await fetch('/api/location/resolve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: query?.trim() || undefined,
-          countryCode: country === 'India' ? 'IN' : undefined,
-          previousCountry: country,
-          latitude: rounded?.lat,
-          longitude: rounded?.lon,
-        }),
-      });
-
-      if (locRes.ok) {
-        const loc = (await locRes.json()).location;
-        const aqiRes = await fetch('/api/air-quality/current', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            latitude: loc.latitude,
-            longitude: loc.longitude,
-            countryCode: loc.countryCode,
-          }),
-        });
-        if (aqiRes.ok) {
-          const resolved = buildResolvedLocation(
-            loc,
-            (await aqiRes.json()).airQuality,
-            loc.latitude,
-            loc.longitude
-          );
-          clientAqiCache.set(cacheKey, { data: resolved, timestamp: Date.now() });
-          return resolved;
-        }
-      }
-    } catch {
-      // Graceful offline fallback
+    const apiResult = await fetchApiLocationAqi(query, country, rounded);
+    if (apiResult) {
+      clientAqiCache.set(cacheKey, { data: apiResult, timestamp: Date.now() });
+      return apiResult;
     }
-
     return buildOfflineFallback(query, country);
   })().finally(() => {
     inFlightAqiRequests.delete(cacheKey);
@@ -116,7 +116,7 @@ export async function resolveLocationAQI(
   return fetchPromise;
 }
 
-export async function detectDeviceLocation(currentCountry?: string): Promise<{
+export interface DeviceLocationResult {
   city: string;
   name: string;
   country?: string;
@@ -127,7 +127,49 @@ export async function detectDeviceLocation(currentCountry?: string): Promise<{
   postalCode?: string;
   attribution?: string;
   coords: { lat: number; lon: number };
-}> {
+}
+
+async function resolveCoordsWithBackend(
+  lat: number,
+  lon: number,
+  currentCountry?: string
+): Promise<DeviceLocationResult> {
+  try {
+    const res = await fetch('/api/location/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ latitude: lat, longitude: lon, previousCountry: currentCountry }),
+    });
+    if (res.ok) {
+      const loc = (await res.json()).location;
+      return {
+        city: loc.city || loc.name || 'Current Location',
+        name: loc.name || loc.city || 'Current Location',
+        country: loc.country && loc.country !== 'Unknown' ? loc.country : currentCountry,
+        countryCode: loc.countryCode,
+        district: loc.district,
+        state: loc.state,
+        locality: loc.locality,
+        postalCode: loc.postcode,
+        attribution: loc.attribution,
+        coords: { lat, lon },
+      };
+    }
+  } catch {
+    // Return fallback
+  }
+
+  return {
+    city: 'Current Location',
+    name: 'Current Location',
+    country: currentCountry,
+    coords: { lat, lon },
+  };
+}
+
+export async function detectDeviceLocation(
+  currentCountry?: string
+): Promise<DeviceLocationResult> {
   return new Promise((resolve, reject) => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       reject(new Error('Geolocation is not supported by your current browser.'));
@@ -140,43 +182,8 @@ export async function detectDeviceLocation(currentCountry?: string): Promise<{
           Math.round(pos.coords.latitude * COORDINATE_DECIMAL_FACTOR) / COORDINATE_DECIMAL_FACTOR;
         const lon =
           Math.round(pos.coords.longitude * COORDINATE_DECIMAL_FACTOR) / COORDINATE_DECIMAL_FACTOR;
-
-        try {
-          const res = await fetch('/api/location/resolve', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              latitude: lat,
-              longitude: lon,
-              previousCountry: currentCountry,
-            }),
-          });
-          if (res.ok) {
-            const loc = (await res.json()).location;
-            resolve({
-              city: loc.city || loc.name || 'Current Location',
-              name: loc.name || loc.city || 'Current Location',
-              country: loc.country && loc.country !== 'Unknown' ? loc.country : currentCountry,
-              countryCode: loc.countryCode,
-              district: loc.district,
-              state: loc.state,
-              locality: loc.locality,
-              postalCode: loc.postcode,
-              attribution: loc.attribution,
-              coords: { lat, lon },
-            });
-            return;
-          }
-        } catch {
-          // Fallback
-        }
-
-        resolve({
-          city: 'Current Location',
-          name: 'Current Location',
-          country: currentCountry,
-          coords: { lat, lon },
-        });
+        const result = await resolveCoordsWithBackend(lat, lon, currentCountry);
+        resolve(result);
       },
       (err) =>
         reject(

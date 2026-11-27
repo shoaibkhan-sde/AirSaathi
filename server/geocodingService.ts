@@ -1,4 +1,6 @@
-import type { LocationResolveRequest, ResolvedLocation } from './types.ts';
+import type { LocationResolveRequest, ResolvedLocation, LocationHierarchy } from './types.ts';
+
+type ReverseGeocodeResult = LocationHierarchy & { attribution?: string };
 import {
   MIN_LATITUDE,
   MAX_LATITUDE,
@@ -39,28 +41,55 @@ export function roundCoordinate(val: number): number {
 
 export function isValidCoordinate(lat?: unknown, lon?: unknown): lat is number {
   return (
-    typeof lat === 'number' &&
-    typeof lon === 'number' &&
-    Number.isFinite(lat) &&
-    Number.isFinite(lon) &&
-    lat >= MIN_LATITUDE &&
-    lat <= MAX_LATITUDE &&
-    lon >= MIN_LONGITUDE &&
-    lon <= MAX_LONGITUDE
+    typeof lat === 'number' && typeof lon === 'number' &&
+    Number.isFinite(lat) && Number.isFinite(lon) &&
+    lat >= MIN_LATITUDE && lat <= MAX_LATITUDE &&
+    lon >= MIN_LONGITUDE && lon <= MAX_LONGITUDE
   );
 }
 
 function checkCache(cacheKey: string): ResolvedLocation | null {
   const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < DEFAULT_CACHE_TTL_MS) {
-    return cached.data;
-  }
-  return null;
+  return cached && Date.now() - cached.timestamp < DEFAULT_CACHE_TTL_MS ? cached.data : null;
 }
 
 function saveCache(cacheKey: string, data: ResolvedLocation): ResolvedLocation {
   cache.set(cacheKey, { data, timestamp: Date.now() });
   return data;
+}
+
+function buildStaticResolved(
+  query: string,
+  match: NonNullable<ReturnType<typeof findStaticLocation>>
+): ResolvedLocation {
+  const isPin = /^\d{4,6}$/.test(query);
+  return {
+    id: `loc_${match.city.toLowerCase()}`,
+    name: match.city,
+    city: match.city,
+    region: match.region,
+    state: match.region,
+    country: match.country,
+    countryCode: match.countryCode,
+    latitude: roundCoordinate(match.lat),
+    longitude: roundCoordinate(match.lon),
+    postcode: isPin ? query : match.pinCodes[0],
+    source: isPin ? 'pin' : 'manual',
+    precision: isPin ? 'postal_code' : 'city',
+  };
+}
+
+async function queryExternalGeocoders(
+  query: string,
+  code: string
+): Promise<ResolvedLocation | null> {
+  if (/^\d{4,6}$/.test(query)) {
+    const pinRes = await forwardGeocodePin(query);
+    if (pinRes) return pinRes;
+  }
+  const openMeteoRes = await forwardGeocodeOpenMeteo(query, code);
+  if (openMeteoRes) return openMeteoRes;
+  return forwardGeocodeNominatim(query, code);
 }
 
 /**
@@ -74,38 +103,26 @@ async function resolveForwardQuery(query: string, countryCode?: string): Promise
 
   const staticMatch = findStaticLocation(query);
   if (staticMatch) {
-    const isPin = /^\d{4,6}$/.test(query);
-    return saveCache(cacheKey, {
-      id: `loc_${staticMatch.city.toLowerCase()}`,
-      name: staticMatch.city,
-      city: staticMatch.city,
-      region: staticMatch.region,
-      state: staticMatch.region,
-      country: staticMatch.country,
-      countryCode: staticMatch.countryCode,
-      latitude: roundCoordinate(staticMatch.lat),
-      longitude: roundCoordinate(staticMatch.lon),
-      postcode: isPin ? query : staticMatch.pinCodes[0],
-      source: isPin ? 'pin' : 'manual',
-      precision: isPin ? 'postal_code' : 'city',
-    });
+    return saveCache(cacheKey, buildStaticResolved(query, staticMatch));
   }
 
-  if (/^\d{4,6}$/.test(query)) {
-    const pinRes = await forwardGeocodePin(query);
-    if (pinRes) return saveCache(cacheKey, pinRes);
-  }
-
-  const openMeteoRes = await forwardGeocodeOpenMeteo(query, code);
-  if (openMeteoRes) return saveCache(cacheKey, openMeteoRes);
-
-  const nominatimRes = await forwardGeocodeNominatim(query, code);
-  if (nominatimRes) return saveCache(cacheKey, nominatimRes);
+  const externalRes = await queryExternalGeocoders(query, code);
+  if (externalRes) return saveCache(cacheKey, externalRes);
 
   throw {
     code: 'LOCATION_NOT_FOUND',
     message: `No matching places found for "${query}" in ${code}. Please check spelling or postal code.`,
   };
+}
+
+function formatReverseDisplayName(
+  settlement: string,
+  rev?: ReverseGeocodeResult | null
+): string {
+  if (settlement === 'Current Location') {
+    return rev?.district ? `Current Location (${rev.district})` : 'Current Location';
+  }
+  return rev?.state && settlement !== rev.state ? `${settlement}, ${rev.state}` : settlement;
 }
 
 /**
@@ -135,18 +152,9 @@ async function resolveReverseCoords(req: LocationResolveRequest): Promise<Resolv
     rev?.country || req.previousCountry || (req.countryCode === 'IN' ? DEFAULT_COUNTRY : undefined);
   const resolvedCountryCode = rev?.countryCode || req.countryCode?.toUpperCase();
 
-  const displayName =
-    settlement === 'Current Location'
-      ? rev?.district
-        ? `Current Location (${rev.district})`
-        : 'Current Location'
-      : rev?.state && settlement !== rev.state
-        ? `${settlement}, ${rev.state}`
-        : settlement;
-
   return saveCache(cacheKey, {
     id: `loc_${roundedLat}_${roundedLon}`,
-    name: displayName,
+    name: formatReverseDisplayName(settlement, rev),
     city: settlement,
     locality: rev?.locality,
     district: rev?.district,
@@ -171,18 +179,13 @@ export async function resolveLocation(req: LocationResolveRequest): Promise<Reso
   const query = req.query?.trim();
   const isExplicit = Boolean(
     query &&
-    query !== 'Your location' &&
-    !query.toLowerCase().includes('device location') &&
-    !query.toLowerCase().includes('current location')
+      query !== 'Your location' &&
+      !query.toLowerCase().includes('device location') &&
+      !query.toLowerCase().includes('current location')
   );
 
-  if (isExplicit && query) {
-    return resolveForwardQuery(query, req.countryCode);
-  }
-
-  if (req.latitude !== undefined && req.longitude !== undefined) {
-    return resolveReverseCoords(req);
-  }
+  if (isExplicit && query) return resolveForwardQuery(query, req.countryCode);
+  if (req.latitude !== undefined && req.longitude !== undefined) return resolveReverseCoords(req);
 
   throw {
     code: 'INVALID_INPUT',

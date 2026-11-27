@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
+import type { OnboardingCompleteRequest } from './types.ts';
 import { resolveLocation } from './geocodingService.ts';
 import { fetchCurrentAirQuality } from './airQualityService.ts';
 import { generatePersonalizedRecommendations } from './recommendationService.ts';
@@ -63,7 +64,7 @@ async function handleOnboardingComplete(req: IncomingMessage, res: ServerRespons
   const recommendations = generatePersonalizedRecommendations(airQuality, {
     location,
     ...profileFields,
-  } as any);
+  } as OnboardingCompleteRequest);
 
   sendJson(res, 200, {
     status: 'success',
@@ -132,13 +133,17 @@ export async function handleApiRequest(
 
     sendError(res, 404, 'INVALID_INPUT', `API endpoint ${req.method} ${url} does not exist.`);
     return true;
-  } catch (err: any) {
-    const status = mapErrorStatus(err);
+  } catch (err: unknown) {
+    const errorObj =
+      typeof err === 'object' && err !== null
+        ? (err as { statusCode?: number; code?: string; message?: string })
+        : {};
+    const status = mapErrorStatus(errorObj);
     sendError(
       res,
       status,
-      err.code || 'INTERNAL_ERROR',
-      err.message || 'An unexpected backend processing error occurred.'
+      errorObj.code || 'INTERNAL_ERROR',
+      errorObj.message || 'An unexpected backend processing error occurred.'
     );
     return true;
   }

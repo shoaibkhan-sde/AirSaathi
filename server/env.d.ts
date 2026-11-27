@@ -4,7 +4,10 @@ declare module 'http' {
     method?: string;
     headers: Record<string, string | string[] | undefined>;
     socket?: { remoteAddress?: string };
-    on(event: string, listener: (...args: any[]) => void): this;
+    on(event: 'data', listener: (chunk: Buffer | string) => void): this;
+    on(event: 'end', listener: () => void): this;
+    on(event: 'error', listener: (err: unknown) => void): this;
+    on(event: string, listener: (...args: unknown[]) => void): this;
     destroy(): this;
   }
 

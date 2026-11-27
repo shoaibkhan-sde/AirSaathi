@@ -6,9 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && esbuild server/serverlessHandler.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=api/index.js",
-    "lint": "eslint src --max-warnings 0",
+    "lint": "eslint src server --max-warnings 0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "verify": "npm run lint && npm run typecheck && npm test",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "test:unit": "node --experimental-strip-types --test tests/*Unit*.test.ts tests/aqiBoundaries.test.ts tests/locationValidation.test.ts tests/homeRecommendations.test.ts tests/indoorAirEngine.test.ts tests/smartTipsEngine.test.ts tests/sustainabilityEngine.test.ts tests/storage*.test.ts",
     "test:integration": "node --experimental-strip-types --test tests/integration*.test.ts tests/providerIntegration.test.ts tests/apiRoutes.test.ts",

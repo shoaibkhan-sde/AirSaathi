@@ -82,49 +82,52 @@ const MainContent: React.FC = () => {
     );
   }
 
-  const renderActiveView = () => {
-    switch (activePage) {
-      case 'home':
-        return (
-          <div className="w-full max-w-[1040px] mx-auto flex flex-col">
-            <div className="mb-3.5 sm:mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-brand-border/50 dark:border-slate-800">
-              <div>
-                <h1 className="font-heading font-extrabold text-[22px] sm:text-[24px] md:text-[26px] text-brand-text dark:text-white tracking-tight leading-tight">
-                  {getISTGreeting()}
-                </h1>
-                <p className="text-[12.5px] sm:text-[13px] md:text-[14px] font-normal text-brand-text-secondary dark:text-slate-400 mt-0.5 sm:mt-1 leading-normal">
-                  Here's your air-quality update and clean-air plan for today.
-                </p>
-              </div>
-              <div className="hidden sm:inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white dark:bg-[#182228] border border-brand-border dark:border-slate-700 text-[11.5px] font-semibold text-brand-text dark:text-slate-200 shadow-xs self-start sm:self-auto">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none" aria-hidden="true" />
-                <span>Live Dashboard</span>
-              </div>
-            </div>
+const HomeDashboardView: React.FC = () => (
+  <div className="w-full max-w-[1040px] mx-auto flex flex-col">
+    <div className="mb-3.5 sm:mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-brand-border/50 dark:border-slate-800">
+      <div>
+        <h1 className="font-heading font-extrabold text-[22px] sm:text-[24px] md:text-[26px] text-brand-text dark:text-white tracking-tight leading-tight">
+          {getISTGreeting()}
+        </h1>
+        <p className="text-[12.5px] sm:text-[13px] md:text-[14px] font-normal text-brand-text-secondary dark:text-slate-400 mt-0.5 sm:mt-1 leading-normal">
+          Here's your air-quality update and clean-air plan for today.
+        </p>
+      </div>
+      <div className="hidden sm:inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white dark:bg-[#182228] border border-brand-border dark:border-slate-700 text-[11.5px] font-semibold text-brand-text dark:text-slate-200 shadow-xs self-start sm:self-auto">
+        <span
+          className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"
+          aria-hidden="true"
+        />
+        <span>Live Dashboard</span>
+      </div>
+    </div>
+    <div className="mb-3.5 md:mb-4">
+      <AQIHeroCard />
+    </div>
+    <div className="mb-2 md:mb-3">
+      <RecommendationsRow />
+    </div>
+  </div>
+);
 
-            <div className="mb-3.5 md:mb-4">
-              <AQIHeroCard />
-            </div>
-
-            <div className="mb-2 md:mb-3">
-              <RecommendationsRow />
-            </div>
-          </div>
-        );
-      case 'tips':
-        return <SmartTipsView />;
-      case 'indoor':
-        return <IndoorAirView />;
-      case 'sustainability':
-        return <SustainabilityView />;
-      case 'guide':
-        return <AirGuideView />;
-      case 'settings':
-        return <SettingsView />;
-      default:
-        return null;
-    }
-  };
+const renderActiveView = (page: string) => {
+  switch (page) {
+    case 'home':
+      return <HomeDashboardView />;
+    case 'tips':
+      return <SmartTipsView />;
+    case 'indoor':
+      return <IndoorAirView />;
+    case 'sustainability':
+      return <SustainabilityView />;
+    case 'guide':
+      return <AirGuideView />;
+    case 'settings':
+      return <SettingsView />;
+    default:
+      return null;
+  }
+};
 
   return (
     <div className="h-screen w-full max-w-full bg-[#F6F9FB] dark:bg-[#0F171B] flex flex-col md:flex-row overflow-hidden font-sans">
@@ -145,7 +148,7 @@ const MainContent: React.FC = () => {
           tabIndex={-1}
           className="flex-1 min-h-0 min-w-0 overflow-y-auto px-3.5 sm:px-6 md:px-8 lg:px-10 pt-3 md:pt-4 pb-24 md:pb-8 focus:outline-none"
         >
-          <Suspense fallback={<ViewSkeleton />}>{renderActiveView()}</Suspense>
+          <Suspense fallback={<ViewSkeleton />}>{renderActiveView(activePage)}</Suspense>
         </main>
 
         <MobileNav />
